@@ -20,9 +20,13 @@ import copy
 import re
 from typing import TYPE_CHECKING
 
+from ..utils import is_torch_available
 from .base import HfQuantizer
 from .quantizers_utils import checkpoint_module_namer, dedupe_conversions, plan_entry_for
 
+
+if is_torch_available():
+    from torch import nn
 
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
@@ -132,11 +136,29 @@ class FineGrainedHfQuantizer(HfQuantizer):
         skipped = self.get_modules_to_not_convert(
             model, self.quantization_config.modules_to_not_convert, model._keep_in_fp32_modules
         )
+        tables = self._embedding_tables(model)
         for member in self.members:
             own = [pattern for pattern, owner in self._plan.items() if owner is member]
             others = [pattern for pattern in self._plan if pattern not in own]
             member.quantization_config.modules_to_not_convert = [*skipped, _skip_unowned(own, others)]
+            # every member knows every table. Only the owner's skip-list lets it convert one.
+            member.quantization_config.modules_to_convert = tables
             member._process_model_before_weight_loading(model, **kwargs)
+
+    def _embedding_tables(self, model: "PreTrainedModel") -> list[str]:
+        """Return the embedding tables to quantize: the passed ones and the ones a targeted entry names.
+
+        A quantizer skips embeddings unless they are opted in. A passed table loads through the catch-all's member.
+        """
+        tables = list(self.quantization_config.modules_to_convert or [])
+        if tables and ".*" not in self._plan:
+            raise ValueError("`modules_to_convert` needs a `.*` entry in the `dtype_plan` to quantize its tables.")
+        named = [
+            name
+            for name, module in model.named_modules()
+            if isinstance(module, nn.Embedding) and plan_entry_for(self._plan, name, catch_all=False) is not None
+        ]
+        return tables + named
 
     def _resolve_plan(self, model: "PreTrainedModel"):
         """Add an entry by model name for each module a pattern matches by its checkpoint name.
@@ -146,8 +168,12 @@ class FineGrainedHfQuantizer(HfQuantizer):
         to_checkpoint = checkpoint_module_namer(model)
         plan = self._plan
         resolved = dict(plan)
+        matched = set()
         for name, _ in model.named_modules():
             checkpoint_name = to_checkpoint(name)
+            matched.update(
+                pattern for pattern in plan if re.search(pattern, name) or re.search(pattern, checkpoint_name)
+            )
             native = plan_entry_for(plan, name, catch_all=False)
             source = plan_entry_for(plan, checkpoint_name, catch_all=False)
             if native is not None and source is not None and native is not source:
@@ -156,6 +182,12 @@ class FineGrainedHfQuantizer(HfQuantizer):
                 )
             if source is not None and native is None:
                 resolved[rf"^{re.escape(name)}$"] = source
+        for pattern, member in plan.items():
+            if getattr(member.quantization_config, "checkpoint_format", None) == "modelopt" and pattern not in matched:
+                raise ValueError(
+                    f"ModelOpt target {pattern!r} matches no module. "
+                    "Per-expert assignments cannot target an architecture that stores fused expert tensors."
+                )
         self._plan = resolved
 
     def update_parallel_plan(self, model, plan):
