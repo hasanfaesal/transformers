@@ -372,7 +372,7 @@ class FineGrainedPlanTest(unittest.TestCase):
 
     def test_each_member_finishes_the_loaded_model_once(self):
         """Every member checks the modules and keeps DeepGEMM off a model spread over devices, once per load."""
-        import transformers.integrations.finegrained as finegrained
+        import transformers.integrations.finegrained.layers as finegrained
         from transformers.quantizers.quantizer_finegrained import FineGrainedHfQuantizer
 
         for config in (
