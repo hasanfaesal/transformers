@@ -217,8 +217,8 @@ class FineGrainedPlanTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             FineGrainedConfig(dtype_plan={".*": "fp8"})
 
-    def test_a_loaded_model_is_finished_once_whatever_its_formats(self):
-        """Check that each format checks its modules and disables multi-device DeepGEMM once per load."""
+    def test_each_member_finishes_the_loaded_model_once(self):
+        """Check that each member checks the modules and disables multi-device DeepGEMM once per load."""
         from transformers.quantizers.quantizer_finegrained import FineGrainedHfQuantizer
 
         for config in (
@@ -234,7 +234,8 @@ class FineGrainedPlanTest(unittest.TestCase):
                     mock.patch.object(fg, "disable_deepgemm_on_multi_device") as deepgemm,
                 ):
                     quantizer._process_model_after_weight_loading(nn.Module())
-                self.assertEqual((checked.call_count, deepgemm.call_count), (1, 1))
+                members = len(getattr(quantizer, "members", [quantizer]))
+                self.assertEqual((checked.call_count, deepgemm.call_count), (members, members))
 
     def test_the_tensor_parallel_plan_resolves_the_experts_entry_for_the_tp_glob(self):
         """Check that intra-expert TP reads the expert scale style from the plan entries under the TP glob.
@@ -400,7 +401,7 @@ class FineGrainedPlanTest(unittest.TestCase):
 
         config = FineGrainedConfig(dtype_plan={r"\.experts($|\.)": NVFP4Config(), ".*": Fp8Config()})
         quantizer = FineGrainedHfQuantizer(config, pre_quantized=False)
-        self.assertEqual([member.pre_quantized for member in quantizer.members()], [False, False])
+        self.assertEqual([member.pre_quantized for member in quantizer.members], [False, False])
 
     def test_parallel_plans_replicate_the_per_tensor_scales(self):
         """Check that parallel plans replicate per-tensor scales.
@@ -741,8 +742,7 @@ class FineGrainedPlanConversionTest(unittest.TestCase):
             },
         )
         quantizer = FineGrainedHfQuantizer(config)
-        quantizer.pre_quantized = True
-        fp8 = next(member for member in quantizer.members() if member.quantization_config is config.dtype_plan[".*"])
+        fp8 = quantizer.member_for("model.layers.0.self_attn.q_proj")
         model = _conversion_model(quantizer)
         self.assertEqual(fp8._up_projections(model), ())
         conversions = quantizer.update_weight_conversions([], model)
