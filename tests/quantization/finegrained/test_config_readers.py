@@ -162,7 +162,7 @@ class BlockScaledCheckpointReaderTest(unittest.TestCase):
                     "quantized_layers": {target: {"quant_algo": "NVFP4"}},
                 }
             )
-            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "matches no supported"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "matches no module"):
                 _quantizer_for(config)._process_model_before_weight_loading(model)
 
     def test_activations_the_weights_kernels_do_not_serve_stay_with_compressed_tensors(self):
